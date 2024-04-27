@@ -10,7 +10,7 @@ from tqdm import tqdm
 from torch.profiler import record_function
 
 import sampler
-from node import Node
+from node import Node  # , stds_across_params, stds_across_nodes
 from decoder import TorchTensorEncoder
 from centralised import load_so2sat, SimpleModel
 
@@ -59,7 +59,7 @@ if __name__ == "__main__":
                         action=argparse.BooleanOptionalAction)
 
     parser.add_argument("--pretrained-model", type=str)
-    parser.add_argument("--parameter-samples", type=int, default=100)
+    parser.add_argument("--parameter-samples", type=int, default=20)
 
     parser.add_argument("--test-every", type=int, default=1)
     parser.add_argument("--test-exponential",
@@ -224,8 +224,8 @@ if __name__ == "__main__":
                 "round": t,
                 "test_accuracies": test_accuracy,
                 "test_losses": test_loss,
-                # "training_changes": training_changes,
-                # "aggregation_changes": aggregation_changes,
+                "training_changes": training_changes,
+                "aggregation_changes": aggregation_changes,
                 # "params": {
                 #     n: nodes[n].model.param_sample(param_sample_indecies)
                 #     for n in graph.nodes},

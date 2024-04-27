@@ -65,7 +65,7 @@ def load_so2sat(device: torch.device = torch.device("cpu"),
                 "image": transforms.functional.normalize(
                     item["image"], mean=band_means, std=band_stds)}
 
-    train_dataset = So2Sat(root="./data", version="3_random", split="train",
+    train_dataset = So2Sat(root="data", version="3_random", split="train",
                            bands=bands, transforms=normalise)
     print(len(train_dataset), file=sys.stderr)
     if train_samples > len(train_dataset):
@@ -81,7 +81,7 @@ def load_so2sat(device: torch.device = torch.device("cpu"),
             torch.stack(data).to(device),
             torch.tensor(targets).to(device))
 
-    test_dataset = So2Sat(root="/tmp/data", version="3_random", split="test",
+    test_dataset = So2Sat(root="data", version="3_random", split="test",
                           bands=bands, transforms=normalise)
     print(len(test_dataset), file=sys.stderr)
     if test_samples > len(test_dataset):
