@@ -5,6 +5,7 @@ import argparse
 import torch
 from torchvision import transforms
 from torchgeo.datasets import So2Sat
+from torchvision.datasets import MNIST
 from tqdm import tqdm
 
 
@@ -25,6 +26,50 @@ class PairDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor]]):
 
     def __len__(self):
         return self.data.size(0)
+
+
+def load_mnist(device: torch.device = torch.device("cpu"),
+               train_samples=10000, test_samples=1000):
+    print(f"preparing datasets {train_samples} {test_samples}",
+          file=sys.stderr)
+
+    normalize = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))  # Mean and Std deviation for MNIST
+    ])
+
+    train_dataset = MNIST(root="data", train=True, download=True, transform=normalize)
+    print(f"Total training dataset size: {len(train_dataset)}", file=sys.stderr)
+
+    if train_samples > len(train_dataset):
+        raise ValueError("Training samples must not be larger than the training dataset")
+
+    train_indices = torch.randperm(len(train_dataset))[:train_samples]
+    train_dataset = torch.utils.data.Subset(train_dataset, train_indices)
+    print("Reading training dataset", file=sys.stderr)
+
+    data, targets = zip(*tqdm(train_dataset))
+    train_dataset = PairDataset(
+            torch.stack(data).to(device),
+            torch.tensor(targets).to(device))
+
+    test_dataset = MNIST(root="data", train=False, download=True, transform=normalize)
+    print(f"Total test dataset size: {len(test_dataset)}", file=sys.stderr)
+    if test_samples > len(test_dataset):
+        raise ValueError("Test samples must not be larger than the test dataset")
+
+    test_indices = torch.randperm(len(test_dataset))[:test_samples]
+    test_dataset = torch.utils.data.Subset(test_dataset, test_indices)
+
+    print("Reading test dataset", file=sys.stderr)
+    data, targets = zip(*tqdm(test_dataset))
+    test_dataset = PairDataset(
+            torch.stack(data).to(device),
+            torch.tensor(targets).to(device))
+
+    print("Loaded MNIST datasets", file=sys.stderr)
+
+    return train_dataset, test_dataset
 
 
 def load_so2sat(device: torch.device = torch.device("cpu"),
@@ -95,7 +140,7 @@ def load_so2sat(device: torch.device = torch.device("cpu"),
     test_dataset = PairDataset(
             torch.stack(data).to(device),
             torch.tensor(targets).to(device))
-    print("loaded datasets", file=sys.stderr)
+    print("loaded So2Sat datasets", file=sys.stderr)
 
     return train_dataset, test_dataset
 
@@ -110,6 +155,44 @@ def init_params(m: torch.nn.Module, gain: float = 1.0):
     with torch.no_grad():
         m.weight.uniform_(-bound, bound)
         m.bias.uniform_(-bound, bound)
+
+
+class SimpleMNIST(torch.nn.Module):
+    def __init__(self, gain=1.0):
+        super(SimpleMNIST, self).__init__()
+
+        self.input_size = 28*28
+        self.output_size = 10
+
+        h1 = 512
+        h2 = 256
+        h3 = 128
+        self.fc1 = torch.nn.Linear(self.input_size, h1)
+        bounds = gain*(6/self.input_size)**0.5
+        torch.nn.init.uniform_(self.fc1.weight, -bounds, bounds)
+        self.fc2 = torch.nn.Linear(h1, h2)
+        bounds = gain*(6/h1)**0.5
+        torch.nn.init.uniform_(self.fc2.weight, -bounds, bounds)
+        self.fc3 = torch.nn.Linear(h2, h3)
+        bounds = gain*(6/h2)**0.5
+        torch.nn.init.uniform_(self.fc3.weight, -bounds, bounds)
+        self.fc4 = torch.nn.Linear(h3, self.output_size)
+        bounds = gain*(6/h3)**0.5
+        torch.nn.init.uniform_(self.fc4.weight, -bounds, bounds)
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x):
+        x = x.view(-1, x.shape[1]*x.shape[-2]*x.shape[-1])
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        x = self.relu(self.fc3(x))
+        x = self.fc4(self.relu(x))
+        return x
+
+    def param_sample(self, indecies: dict[str, torch.Tensor]):
+        return {
+            name: tensor.ravel()[indecies[name]]
+            for name, tensor in self.state_dict().items()}
 
 
 class SimpleRegularisedModel(torch.nn.Module):
