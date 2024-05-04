@@ -12,7 +12,7 @@ from torch.profiler import record_function
 import sampler
 from node import Node  # , stds_across_params, stds_across_nodes
 from decoder import TorchTensorEncoder
-from centralised import load_so2sat, SimpleModel
+from centralised import load_so2sat, load_mnist, SimpleModel, SimpleMNIST
 
 
 def save_state(nodes: dict[str, Node], round: int, filename: str):
@@ -37,6 +37,14 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--momentum", type=float, default=0.5)
 
+    parser.add_argument("--dataset",
+                        choices=["mnist", "so2sat"],
+                        default="so2sat")
+
+    parser.add_argument("--arch",
+                        choices=["simple", "simple-mnist"],
+                        default="simple")
+
     parser.add_argument("--data-distribution",
                         choices=["zipf", "iid", "balanced_iid"],
                         required=True)
@@ -46,6 +54,7 @@ if __name__ == "__main__":
     parser.add_argument("--aggregation-method",
                         choices=["decdiff", "avg"],
                         required=True)
+    parser.add_argument("--communication-prob", type=float, default=1.0)
 
     parser.add_argument("--training-method",
                         choices=["simple"],
@@ -76,10 +85,18 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"using device {device}", file=sys.stderr)
 
-    train_samples = args.items_per_user*graph.number_of_nodes()
-    dataset, test_dataset = load_so2sat(device=device,
-                                        train_samples=train_samples,
-                                        test_samples=30000)
+    train_samples = int(args.items_per_user*graph.number_of_nodes()*1.1)
+    if args.dataset == "so2sat":
+        dataset, test_dataset = load_so2sat(device=device,
+                                            train_samples=train_samples,
+                                            test_samples=30000)
+    elif args.dataset == "mnist":
+        dataset, test_dataset = load_mnist(device=device,
+                                            train_samples=train_samples,
+                                            test_samples=10000)
+    else:
+        raise ValueError(f"dataset ``{args.dataset}'' is not defined.")
+
 
     rng = np.random.default_rng()
 
@@ -131,7 +148,14 @@ if __name__ == "__main__":
 
     print(f"gain: {gain}", file=sys.stderr)
     nodes = {}
-    model_class = SimpleModel
+
+    if args.arch == "simple":
+        model_class = SimpleModel
+    elif args.arch == "simple-mnist":
+        model_class = SimpleMNIST
+    else:
+        raise ValueError("architecture not implemented")
+
     for (train, valid), node in zip(partitions, graph.nodes):
         model = model_class(gain=gain).to(device)
         if args.pretrained_model:
@@ -172,7 +196,9 @@ if __name__ == "__main__":
         new_states = {}
         aggregation_changes = {}
         for i, node in nodes.items():
-            neighbours = [nodes[n] for n in graph[i]]
+            neighbours = [
+                nodes[n] for n in graph[i]
+                if rng.random() <= args.communication_prob]
             trusts = [1.0 for _ in neighbours]
 
             with record_function("aggregation"):
