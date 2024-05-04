@@ -113,7 +113,12 @@ class Node:
         original_params = copy.deepcopy(self.model.state_dict())
 
         if len(neighbours) == 0:
-            return original_params
+            param_changes = {}
+            if param_sample_indecies is not None:
+                param_changes = {
+                    key: 0.0 for key, idxs
+                    in param_sample_indecies.items()}
+            return original_params, param_changes
 
         self_trust = 1.
         self_alpha = self.data_size/total_neighbourhood_data
