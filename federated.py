@@ -10,9 +10,10 @@ from tqdm import tqdm
 from torch.profiler import record_function
 
 import sampler
-from node import Node  # , stds_across_params, stds_across_nodes
+from node import Node, stds_across_params, stds_across_nodes
 from decoder import TorchTensorEncoder
-from centralised import load_so2sat, load_mnist, SimpleModel, SimpleMNIST
+from datasets import load_so2sat, load_mnist, load_cifar10
+from models import SimpleSo2Sat, SimpleMNIST, ResNetCIFAR10, VGGNet16CIFAR10
 
 
 def save_state(nodes: dict[str, Node], round: int, filename: str):
@@ -34,16 +35,17 @@ if __name__ == "__main__":
     parser.add_argument("--validation-split", type=float, default=.0)
     parser.add_argument("--batches", type=int, default=1)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--learning-rate", type=float, default=0.001)
-    parser.add_argument("--momentum", type=float, default=0.5)
 
     parser.add_argument("--dataset",
-                        choices=["mnist", "so2sat"],
+                        choices=["mnist", "so2sat", "cifar10"],
                         default="so2sat")
 
     parser.add_argument("--arch",
-                        choices=["simple", "simple-mnist"],
-                        default="simple")
+                        choices=["simple-so2sat",
+                                 "simple-mnist",
+                                 "resnet-cifar10",
+                                 "vgg-cifar10"],
+                        default="simple-so2sat")
 
     parser.add_argument("--data-distribution",
                         choices=["zipf", "iid", "balanced_iid"],
@@ -55,6 +57,7 @@ if __name__ == "__main__":
                         choices=["decdiff", "avg"],
                         required=True)
     parser.add_argument("--communication-prob", type=float, default=1.0)
+    parser.add_argument("--node-occupation-prob", type=float, default=1.0)
 
     parser.add_argument("--training-method",
                         choices=["simple"],
@@ -62,10 +65,17 @@ if __name__ == "__main__":
     parser.add_argument("--kd-alpha", type=float, default=1.0)
     parser.add_argument("--skd-beta", type=float, default=0.99)
 
-    parser.add_argument("--gain-correction", choices=["none", "sqrt", "graph"],
+    parser.add_argument("--gain-correction",
+                        choices=["none", "sqrt", "graph", "manual"],
                         default="sqrt")
+    parser.add_argument("--gain", type=float, default=1.0)
     parser.add_argument("--early-stopping",
                         action=argparse.BooleanOptionalAction)
+
+    parser.add_argument("--optimiser", choices=["sgd", "adam"],
+                        default="sgd")
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--momentum", type=float, default=0.5)
 
     parser.add_argument("--pretrained-model", type=str)
     parser.add_argument("--parameter-samples", type=int, default=20)
@@ -94,6 +104,10 @@ if __name__ == "__main__":
         dataset, test_dataset = load_mnist(device=device,
                                             train_samples=train_samples,
                                             test_samples=10000)
+    elif args.dataset == "cifar10":
+        dataset, test_dataset = load_cifar10(device=device,
+                                             train_samples=train_samples,
+                                             test_samples=10000)
     else:
         raise ValueError(f"dataset ``{args.dataset}'' is not defined.")
 
@@ -143,16 +157,22 @@ if __name__ == "__main__":
         vals, vecs = np.linalg.eig(adj.T)
         idx = np.argmax(vals)
         gain = np.abs(np.sum(vecs[:, idx]))
+    elif args.gain_correction == "manual":
+        gain = args.gain
     else:
         raise NotImplementedError("gain correction not implemented")
 
     print(f"gain: {gain}", file=sys.stderr)
     nodes = {}
 
-    if args.arch == "simple":
-        model_class = SimpleModel
+    if args.arch == "simple-so2sat":
+        model_class = SimpleSo2Sat
     elif args.arch == "simple-mnist":
         model_class = SimpleMNIST
+    elif args.arch == "resnet-cifar10":
+        model_class = ResNetCIFAR10
+    elif args.arch == "vgg-cifar10":
+        model_class = VGGNet16CIFAR10
     else:
         raise ValueError("architecture not implemented")
 
@@ -182,23 +202,27 @@ if __name__ == "__main__":
         "round": 0,
         "test_accuracies": test_accuracy,
         "test_losses": test_loss,
-        # "params": {
-        #     n: nodes[n].model.param_sample(param_sample_indecies)
-        #     for n in graph.nodes},
-        # "stds_across_nodes": stds_across_nodes(
-        #     list(nodes.values()), param_sample_indecies),
-        # "stds_across_params": stds_across_params(
-        #     list(nodes.values())),
+        "params": {
+            n: nodes[n].model.param_sample(param_sample_indecies)
+            for n in graph.nodes},
+        "stds_across_nodes": stds_across_nodes(
+            list(nodes.values()), param_sample_indecies),
+        "stds_across_params": stds_across_params(
+            list(nodes.values())),
         }, cls=TorchTensorEncoder))
 
     next_test = 1
     for t in tqdm(range(1, args.t_max)):
         new_states = {}
         aggregation_changes = {}
+        occupied_nodes = {
+            n for n in graph.nodes()
+            if rng.random() <= args.node_occupation_prob}
         for i, node in nodes.items():
             neighbours = [
                 nodes[n] for n in graph[i]
-                if rng.random() <= args.communication_prob]
+                if rng.random() <= args.communication_prob and
+                n in occupied_nodes and i in occupied_nodes]
             trusts = [1.0 for _ in neighbours]
 
             with record_function("aggregation"):
@@ -224,11 +248,24 @@ if __name__ == "__main__":
         for i, node in tqdm(nodes.items()):
             node.load_params(new_states[i])
             with record_function("training"):
+                if args.optimiser == "sgd":
+                    optimizer = torch.optim.SGD(
+                            node.model.parameters(),
+                            lr=args.learning_rate,
+                            momentum=args.momentum)
+                elif args.optimiser == "adam":
+                    optimizer = torch.optim.AdamW(
+                            node.model.parameters(),
+                            lr=args.learning_rate)
+                else:
+                    raise ValueError(
+                            f"Optimiser ``{args.optimiser}''"
+                            " is not defined")
+
                 if args.training_method == "simple":
                     training_changes[i] = node.train_simple(
                             batches=args.batches,
-                            learning_rate=args.learning_rate,
-                            momentum=args.momentum,
+                            optimizer=optimizer,
                             device=device,
                             early_stopping=args.early_stopping,
                             param_sample_indecies=param_sample_indecies)
@@ -252,13 +289,13 @@ if __name__ == "__main__":
                 "test_losses": test_loss,
                 "training_changes": training_changes,
                 "aggregation_changes": aggregation_changes,
-                # "params": {
-                #     n: nodes[n].model.param_sample(param_sample_indecies)
-                #     for n in graph.nodes},
-                # "stds_across_nodes": stds_across_nodes(
-                #     list(nodes.values()), param_sample_indecies),
-                # "stds_across_params": stds_across_params(
-                #     list(nodes.values())),
+                "params": {
+                    n: nodes[n].model.param_sample(param_sample_indecies)
+                    for n in graph.nodes},
+                "stds_across_nodes": stds_across_nodes(
+                    list(nodes.values()), param_sample_indecies),
+                "stds_across_params": stds_across_params(
+                    list(nodes.values())),
                 }, cls=TorchTensorEncoder))
         if t == next_test:
             if args.test_exponential:

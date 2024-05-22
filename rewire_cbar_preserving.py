@@ -1,5 +1,7 @@
+import sys
 import argparse
 import random
+
 import numpy as np
 import networkx as nx
 
@@ -44,7 +46,7 @@ def pkk_preserving_rewire(g, max_rewires):
         rewires += 1
 
         if rewires % 500 == 0:
-            print(100*rewires/max_rewires)
+            print(100*rewires/max_rewires, file=sys.stderr)
 
     return g
 
@@ -65,7 +67,7 @@ def pkk_cbar_preserving_rewire(
     norm = len(g.nodes)
 
     b_step = b0
-    print(c, c_t, 1/b_step)
+    print(c, c_t, 1/b_step, file=sys.stderr)
     acc = 1.0
     while abs(c - c_t) > 0 and acc > min_acc:
         accept = 0
@@ -116,7 +118,7 @@ def pkk_cbar_preserving_rewire(
             if dist != 0:
                 total += 1
         acc = accept/total
-        print(c, c - c_t, 1/b_step, acc)
+        print(c, c - c_t, 1/b_step, acc, file=sys.stderr)
         b_step *= b_factor
 
     return g
@@ -125,12 +127,16 @@ def pkk_cbar_preserving_rewire(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("input", help="input graph")
+    parser.add_argument("--epsilon", type=float, default=1e-5)
     args = parser.parse_args()
     g = nx.read_edgelist(args.input, comments="%")
     g2 = pkk_cbar_preserving_rewire(
             g, 10*len(g.edges()), 10*len(g.edges()),
             1.7, 1e-2, 1e-7)
-    print("nodes:", len(g.nodes), len(g2.nodes))
-    print("edges:", len(g.edges), len(g2.edges))
-    print("degs", sorted(g.degree()) == sorted(g2.degree()))
-    print("cbars", nx.average_clustering(g), nx.average_clustering(g2))
+
+    c1 = nx.average_clustering(g)
+    c2 = nx.average_clustering(g2)
+    if abs(c1 - c2) >= args.epsilon:
+        raise RuntimeError("did not converge")
+    for i, j in g2.edges:
+        print(i, j)

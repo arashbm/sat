@@ -1,3 +1,5 @@
+import sys
+
 from typing import Union, Optional
 import copy
 
@@ -11,75 +13,6 @@ DatasetLike = Union[torch.utils.data.Dataset,
 def cycle_iterable(iterable):
     while True:
         yield from iterable
-
-
-class SimpleModel(torch.nn.Module):
-    def __init__(self, input_size, output_size, gain=1.0):
-        super(SimpleModel, self).__init__()
-
-        self.input_size = input_size
-        self.output_size = output_size
-        h1 = 512
-        h2 = 256
-        h3 = 128
-        self.fc1 = torch.nn.Linear(input_size, h1)
-        bounds = gain*(6/input_size)**0.5
-        torch.nn.init.uniform_(self.fc1.weight, -bounds, bounds)
-        self.fc2 = torch.nn.Linear(h1, h2)
-        bounds = gain*(6/h1)**0.5
-        torch.nn.init.uniform_(self.fc2.weight, -bounds, bounds)
-        self.fc3 = torch.nn.Linear(h2, h3)
-        bounds = gain*(6/h2)**0.5
-        torch.nn.init.uniform_(self.fc3.weight, -bounds, bounds)
-        self.fc4 = torch.nn.Linear(h3, output_size)
-        bounds = gain*(6/h3)**0.5
-        torch.nn.init.uniform_(self.fc4.weight, -bounds, bounds)
-        self.relu = torch.nn.ReLU()
-
-    def forward(self, x):
-        x = x.view(-1, x.shape[1]*x.shape[-2]*x.shape[-1])
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.relu(self.fc3(x))
-        x = self.fc4(self.relu(x))
-        return x
-
-    def param_sample(self, indecies: dict[str, torch.Tensor]):
-        return {
-            name: tensor.ravel()[indecies[name]]
-            for name, tensor in self.state_dict().items()}
-
-
-class VerySimpleModel(torch.nn.Module):
-    def __init__(self, input_size, output_size, gain=1.0):
-        super(VerySimpleModel, self).__init__()
-
-        self.input_size = input_size
-        self.output_size = output_size
-        h1 = 10
-        h2 = 20
-        h3 = 10
-        self.fc1 = torch.nn.Linear(input_size, h1)
-        bounds = gain*(6/input_size)**0.5
-        torch.nn.init.uniform_(self.fc1.weight, -bounds, bounds)
-        self.fc2 = torch.nn.Linear(h1, h2)
-        bounds = gain*(6/h1)**0.5
-        torch.nn.init.uniform_(self.fc2.weight, -bounds, bounds)
-        self.fc3 = torch.nn.Linear(h2, h3)
-        bounds = gain*(6/h2)**0.5
-        torch.nn.init.uniform_(self.fc3.weight, -bounds, bounds)
-        self.fc4 = torch.nn.Linear(h3, output_size)
-        bounds = gain*(6/h3)**0.5
-        torch.nn.init.uniform_(self.fc4.weight, -bounds, bounds)
-        self.relu = torch.nn.ReLU()
-
-    def forward(self, x):
-        x = x.view(-1, x.shape[1]*x.shape[-2]*x.shape[-1])
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.relu(self.fc3(x))
-        x = self.fc4(self.relu(x))
-        return x
 
 
 class Node:
@@ -124,7 +57,8 @@ class Node:
         self_alpha = self.data_size/total_neighbourhood_data
         avg_params = copy.deepcopy(self.model.state_dict())
         for key in avg_params.keys():
-            avg_params[key] = torch.zeros_like(avg_params[key])
+            avg_params[key] = torch.zeros_like(avg_params[key],
+                                               dtype=torch.float32)
 
         for key in avg_params.keys():
             for i, neighbour in enumerate(neighbours):
@@ -189,15 +123,11 @@ class Node:
         self.model.load_state_dict(params)
 
     def train_simple(
-            self, batches: int, learning_rate: float, momentum: float,
+            self, batches: int, optimizer: torch.optim.Optimizer,
             device: torch.device, early_stopping=True,
             param_sample_indecies: Optional[dict[str, torch.Tensor]] = None,
             clamp_loss=True):
         self.model.train()
-        optimizer = torch.optim.SGD(
-                self.model.parameters(),
-                lr=learning_rate,
-                momentum=momentum)
         criterion = torch.nn.CrossEntropyLoss(reduction='none')
 
         original_params = copy.deepcopy(self.model.state_dict())
@@ -208,7 +138,7 @@ class Node:
 
             loss = torch.mean(criterion(output, target), dim=0)
             if clamp_loss:
-                loss = torch.clamp(loss, min=0, max=1000)
+                loss = torch.clamp(loss, min=0, max=10)
 
             optimizer.zero_grad()
             loss.backward()
